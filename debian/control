@@ -1,0 +1,9 @@
+Source: ipykee
+Priority: extra
+Maintainer: Egor Khairullin <mikari@yandex-team.ru>
+Build-Depends: debhelper (>= 7.0.0)
+Standards-Version: 3.9.3
+
+Package: ipykee
+Architecture: any
+Description: Provenance package for IPython
