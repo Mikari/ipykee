@@ -36,11 +36,13 @@
                             output : function(msg) {
                                 var msg_type = msg.header.msg_type;
                                 var content = msg.content;
-                                if (msg_type === "pyerr") {
+                                if (msg_type === "error") {
                                     text = "Failed to commit!\n\n" + content.ename + ": " + content.evalue + "\n\n" + content.traceback.join("\n") + "\n";
                                 } else {
-                                    text = content.data + "\n";
+                                    text = content.text + "\n";
                                 }
+                                console.log(msg)
+                                console.log(content)
                                 alert(text)
                             }
                         }

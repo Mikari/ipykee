@@ -8,6 +8,7 @@ import yaml
 import settings
 import datetime
 from logging import debug
+import textwrap
 
 from nbdiff.notebook_diff import notebook_diff
 from nbdiff.server.local_server import app
@@ -135,35 +136,41 @@ def dump_variables(name, variables, destination):
         pickle.dump(variables, out)
 
 
-TEMPLATE_DOCKER_FILE = '''
+TEMPLATE_DOCKER_FILE = textwrap.dedent('''\
     FROM ##DOCKER_IMAGE##
 
-    ENV TEMP /tmp
-    RUN mkdir $TEMP/workdir
-    RUN cd $TEMP/workdir && git clone ##REPOSITORY## project
-    RUN cd project
+    RUN cd ##TARGETDIR##
+    RUN git clone ##REPOSITORY## ##PROJECT##
+    ENV $PROJECT_PATH ##TARGETDIR##/##PROJECT##/
     # RUN git checkout <commit_hash>
-    '''
+    ''')
 
-TEMPLATE_COPY_LINE = '''
-    RUN cp $TEMP/project/##INTERNAL_PATH##/##NOTEBOOK##/notebook.ipynb ##TARGETDIR##/##NOTEBOOK##.ipynb
-    '''
-
-TEMPALTE_FINISH_LINE = '''
-    RUN cd / && rm -rf $TEMP/workdir
-    '''
+TEMPLATE_COPY_LINE = (
+    "RUN cp $PROJECT_PATH/##INTERNAL_PATH##/##NOTEBOOK##/notebook.ipynb $PROJECT_PATH/##NOTEBOOK##.ipynb")
 
 
-def dump_dockerfile(docker_image, repository, internal_path, notebooks_list, destination):
+def convert_to_https(repository):
+    if repository[0:4] == "http":
+        return repository
+    else:
+        try:
+            spl = repository.split(":")
+            return spl[0].replace("git@", "https://") + "/" + spl[1]
+        except:
+            return repository
+
+
+def dump_dockerfile(docker_image, repository, project_name, internal_path, notebooks_list, destination):
     with open(os.path.join(destination, "Dockerfile"), "w") as out:
+        repository_https = convert_to_https(repository)
         docker_file = TEMPLATE_DOCKER_FILE.replace(
                 "##DOCKER_IMAGE##", docker_image).replace(
-                "##REPOSITORY##", repository)
+                "##TARGETDIR##", IPython.get_ipython().starting_dir).replace(
+                "##REPOSITORY##", repository_https).replace(
+                "##PROJECT##", project_name)
         template = TEMPLATE_COPY_LINE.replace(
-                "##INTERNAL_PATH##", internal_path).replace(
-                "##TARGETDIR##", IPython.get_ipython().starting_dir)
-        docker_file += "".join([template.replace("##NOTEBOOK##", notebook_name) for notebook_name in notebooks_list])
-        docker_file += TEMPALTE_FINISH_LINE
+                "##INTERNAL_PATH##", internal_path)
+        docker_file += "\n".join([template.replace("##NOTEBOOK##", notebook_name) for notebook_name in notebooks_list])
         out.write(docker_file)
 
 
@@ -261,7 +268,7 @@ class Keeper(object):
                 os.path.join(self.work_dir, self.project_name, self.project_config['internal-path']))
         except OSError:
             notebooks = []
-        ignored_files = [".git", ".gitattributes"]
+        ignored_files = [".git", ".gitattributes", "Dockerfile"]
         for ignored in ignored_files:
             try:
                 notebooks.remove(ignored)
@@ -318,8 +325,8 @@ class Keeper(object):
         if docker_image is None:
             docker_image = "<docker image is unknown>"
         dump_dockerfile(
-            docker_image, self.project_config['repository'], self.project_config['internal-path'],
-            self.list_notebooks(False), project_dir)
+            docker_image, self.project_config['repository'],  self.project_name,
+            self.project_config['internal-path'], self.list_notebooks(False), project_dir)
         os.chdir(os.path.join(self.work_dir, self.project_name))
 
         try:
