@@ -327,7 +327,7 @@ class Keeper(object):
             execute_command('git update-index --really-refresh', shell=True)
         except:
             pass
-        execute_command(["git", "add", os.path.join(self.project_config['internal-path'], notebook, '*')])
+        execute_command(["git", "add", os.path.join(self.project_config['internal-path'], '*')])
         execute_command('git commit -a -m "' + notebook + ': ' + message + '"', shell=True)
         execute_command('git media clear', shell=True)
         execute_command(["git", "push", "origin", "master"], env=get_git_env(self.project_config))

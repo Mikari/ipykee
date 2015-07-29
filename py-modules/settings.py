@@ -7,7 +7,6 @@ home_dir = os.path.expanduser("~")
 default_config = {
     "work-dir": os.path.join(home_dir, "ipykee/workdir/"),
     "project-dir": os.path.join(home_dir, "ipykee/projects/"),
-    "ipython-url": "127.0.0.1:8080",
     "git-media-path": os.path.join(home_dir, "ipykee/git-media-data/")
 }
 
