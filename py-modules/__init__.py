@@ -1,16 +1,13 @@
 import IPython
 import pickle
 import os
-import json
-import urllib2
 import shutil
-from IPython.lib import kernel
 import tempfile
 import subprocess
 import yaml
 import settings
 import datetime
-from logging import debug, warn
+from logging import debug
 
 from nbdiff.notebook_diff import notebook_diff
 from nbdiff.server.local_server import app
@@ -63,11 +60,18 @@ def delete_project(project_name):
     debug("Deleted project %s" % (project_name))
 
 
+def create_project_if_not_exist(*args, **kwargs):
+    try:
+        create_project(*args, **kwargs)
+    except ProjectAlreadyExistException:
+        print "Project already exists, do nothing"
+
+
 @keep_cwd
 def create_project(project_name, repository=None, internal_path="."):
     config_file = os.path.join(config['project-dir'], project_name + ".yaml")
     if not os.path.exists(config_file):
-        if not repository:
+        if not repository or repository == "local":
             debug("Creating local repository")
             repository = os.path.join(config['project-dir'], project_name)
             if not os.path.exists(repository):
@@ -84,7 +88,7 @@ def create_project(project_name, repository=None, internal_path="."):
             execute_command('git commit --allow-empty -m "Created repository"', shell=True)
             execute_command("git push origin master", shell=True)
             remote = False
-            # shutil.rmtree(tmp_dir)
+            shutil.rmtree(tmp_dir)
         else:
             remote = True
 
@@ -118,11 +122,9 @@ def dump_history(name, destination):
         stream_out.write("# -*- coding: utf-8 -*-\n")
         for ceil in console.history_manager.get_range():
             stream_out.write("\n\n# <codecell>\n\n" + ceil[2])
-
-    shutil.copy(
-        os.path.join(IPython.get_ipython().starting_dir, get_current_notebook_name() + ".ipynb"),
-        os.path.join(destination, "notebook.ipynb")
-    )
+    original_path = os.path.join(IPython.get_ipython().starting_dir, name + ".ipynb")
+    dest = os.path.join(destination, "notebook.ipynb")
+    shutil.copy(original_path, dest)
     console.run_cell("%notebook -e " + os.path.join(destination, "history.py"), silent=True)
     console.run_cell("%notebook -e " + os.path.join(destination, "history.ipynb"), silent=True)
     debug("Copied last saved state of notebook and dumped kernel history")
@@ -133,29 +135,36 @@ def dump_variables(name, variables, destination):
         pickle.dump(variables, out)
 
 
-def get_current_notebook_name():
-    # http://stackoverflow.com/questions/12544056/how-to-i-get-the-current-ipython-notebook-name
-    connection_file_path = kernel.get_connection_file()
-    connection_file = os.path.basename(connection_file_path)
-    kernel_id = connection_file.split('-', 1)[1].split('.')[0]
+TEMPLATE_DOCKER_FILE = '''
+    FROM ##DOCKER_IMAGE##
 
-    # Updated answer with semi-solutions for both IPython 2.x and IPython < 2.x
-    if IPython.version_info[0] < 2:
-        ## Not sure if it's even possible to get the port for the
-        ## notebook app; so just using the default...
-        notebooks = json.load(urllib2.urlopen('http://' + config['ipython-url'] + 'notebooks'))
-        for nb in notebooks:
-            if nb['kernel_id'] == kernel_id:
-                return nb['name']
-    else:
-        sessions = json.load(urllib2.urlopen('http://' + config['ipython-url'] + '/api/sessions'))
-        for sess in sessions:
-            if sess['kernel']['id'] == kernel_id:
-                name = sess['notebook']['name']
-                if name[-6:] == '.ipynb':
-                    return name[:-6]
-                else:
-                    return name
+    ENV TEMP /tmp
+    RUN mkdir $TEMP/workdir
+    RUN cd $TEMP/workdir && git clone ##REPOSITORY## project
+    RUN cd project
+    # RUN git checkout <commit_hash>
+    '''
+
+TEMPLATE_COPY_LINE = '''
+    RUN cp $TEMP/project/##INTERNAL_PATH##/##NOTEBOOK##/notebook.ipynb ##TARGETDIR##/##NOTEBOOK##.ipynb
+    '''
+
+TEMPALTE_FINISH_LINE = '''
+    RUN cd / && rm -rf $TEMP/workdir
+    '''
+
+
+def dump_dockerfile(docker_image, repository, internal_path, notebooks_list, destination):
+    with open(os.path.join(destination, "Dockerfile"), "w") as out:
+        docker_file = TEMPLATE_DOCKER_FILE.replace(
+                "##DOCKER_IMAGE##", docker_image).replace(
+                "##REPOSITORY##", repository)
+        template = TEMPLATE_COPY_LINE.replace(
+                "##INTERNAL_PATH##", internal_path).replace(
+                "##TARGETDIR##", IPython.get_ipython().starting_dir)
+        docker_file += "".join([template.replace("##NOTEBOOK##", notebook_name) for notebook_name in notebooks_list])
+        docker_file += TEMPALTE_FINISH_LINE
+        out.write(docker_file)
 
 
 def list_projects():
@@ -244,10 +253,12 @@ class Keeper(object):
             execute_command("git checkout -f %s" % (revision), shell=True)
             execute_command("git media sync", shell=True)
 
-    def list_notebooks(self):
-        self._checkout()
+    def list_notebooks(self, checkout=True):
+        if checkout:
+            self._checkout()
         try:
-            notebooks = os.listdir(os.path.join(self.work_dir, self.project_name, self.project_config['internal-path']))
+            notebooks = os.listdir(
+                os.path.join(self.work_dir, self.project_name, self.project_config['internal-path']))
         except OSError:
             notebooks = []
         ignored_files = [".git", ".gitattributes"]
@@ -295,15 +306,22 @@ class Keeper(object):
             raise ValueError("Wrong revision or notebook name - variables.dump doesn't exist")
 
     @keep_cwd
-    def _commit(self, notebook, message, variables={}):
+    def _commit(self, notebook, message, variables={}, docker_image=None):
         self._checkout()
-        notebook_dir = os.path.join(self.work_dir, self.project_name, self.project_config['internal-path'], notebook)
+        project_dir = os.path.join(self.work_dir, self.project_name, self.project_config['internal-path'])
+        notebook_dir = os.path.join(project_dir, notebook)
         if not os.path.isdir(notebook_dir):
             os.makedirs(notebook_dir)
             debug("Created directory for notebook: %s" % (notebook))
         dump_history(notebook, notebook_dir)
         dump_variables(notebook, variables, notebook_dir)
+        if docker_image is None:
+            docker_image = "<docker image is unknown>"
+        dump_dockerfile(
+            docker_image, self.project_config['repository'], self.project_config['internal-path'],
+            self.list_notebooks(False), project_dir)
         os.chdir(os.path.join(self.work_dir, self.project_name))
+
         try:
             # TODO: why it sometimes returns retcode=1?
             execute_command('git update-index --really-refresh', shell=True)
@@ -318,10 +336,9 @@ class Keeper(object):
 
 
 class Session(object):
-    def __init__(self, notebook=None, keeper=None, project_name=None):
+    def __init__(self, notebook=None, keeper=None, project_name=None, docker_image=None):
         if not notebook:
-            notebook = get_current_notebook_name()
-            print "This notebook has name %s" % (notebook)
+            raise ValueError("Please, define notebook name")
         self.notebook = notebook
         if not (keeper or project_name):
             raise ValueError("Please, define keeper or project_name")
@@ -329,6 +346,7 @@ class Session(object):
             keeper = Keeper(project_name)
         self.keeper = keeper
         self.variables = dict()
+        self.docker_image = docker_image
 
         print "Please, save your notebook before commit!"
 
@@ -344,8 +362,13 @@ class Session(object):
     def show_added(self):
         return self.variables.keys()
 
-    def commit(self, message):
-        self.keeper._commit(self.notebook, message, variables=self.variables)
+    def commit(self, message, docker_image=None):
+        if docker_image is None:
+            docker_image = self.docker_image
+        if docker_image is None:
+            print "Docker image is not set, 'anaderi/rep:latest' will be used"
+            docker_image = "anaredi/rep:latest"
+        self.keeper._commit(self.notebook, message, variables=self.variables, docker_image=docker_image)
         self.variables = dict()
         return self.history(count=1)[0]
 
