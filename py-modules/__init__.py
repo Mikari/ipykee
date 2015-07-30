@@ -12,7 +12,7 @@ import textwrap
 
 from nbdiff.notebook_diff import notebook_diff
 from nbdiff.server.local_server import app
-import IPython.nbformat.current as current
+import IPython.nbformat as current
 import threading
 
 config = settings.Settings()
@@ -139,10 +139,9 @@ def dump_variables(name, variables, destination):
 TEMPLATE_DOCKER_FILE = textwrap.dedent('''\
     FROM ##DOCKER_IMAGE##
 
-    RUN cd ##TARGETDIR##
-    RUN git clone ##REPOSITORY## ##PROJECT##
-    ENV $PROJECT_PATH ##TARGETDIR##/##PROJECT##/
-    # RUN git checkout <commit_hash>
+    RUN mkdir -p ##TARGETDIR##
+    RUN cd ##TARGETDIR## && git clone ##REPOSITORY## ##PROJECT## # && git checkout <commit_hash>
+    ENV PROJECT_PATH ##TARGETDIR##/##PROJECT##
     ''')
 
 TEMPLATE_COPY_LINE = (

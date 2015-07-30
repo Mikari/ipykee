@@ -41,8 +41,6 @@
                                 } else {
                                     text = content.text + "\n";
                                 }
-                                console.log(msg)
-                                console.log(content)
                                 alert(text)
                             }
                         }
